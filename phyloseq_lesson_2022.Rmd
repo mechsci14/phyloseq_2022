@@ -1,0 +1,607 @@
+---
+title: "Microbiome Analysis 2: Phyloseq"
+author: "Madelyn Houser and Vicki Hertzberg"
+date: "2/23/2022"
+output: 
+  html_document:
+    toc: true
+  word_document:
+    toc: true
+---
+
+# Introduction
+  
+Last class, we learned how to use the `dada2` package to take raw DNA sequence data from a microbiome study, clean it up, identify and count the unique sequences in it, match those sequences with taxonomy information from an external database, and construct a phylogenetic tree (using the `phangorn` package) containing information about the genetic relatedness of the bacteria in the samples. We combined all that information into a single object and passed it to another package - `phyloseq` that we can use to analyze and visualize the data. 
+  
+The `phyloseq` package is a tool to import, store, analyze, and graphically display complex phylogenetic sequencing data that has already been clustered into OTUs[/ASVs], especially when there is associated sample data, phylogenetic tree, and/or taxonomic assignment. `phyloseq` incorporates existing R tools for ecology and phylogenetic analysis as well as graphics creation (ggplot2) into one handy package.
+  
+More information about `phyloseq` and lots of tutorials for performing specific tasks with it can be found here:
+https://joey711.github.io/phyloseq/
+  
+So now that we've gotten our sequence data into a useful form, what can we learn from it?
+  
+We can see what kind of bacteria are present in the samples and which are most abundant.
+  
+We can also borrow some tools from ecology (remember the microbiome can be viewed as a microscopic ecosystem) to describe the diversity of the bacterial community.
+  
+Alpha diversity reflects the *richness* and *evenness* of the organisms that make up a community. Richness is the number of different taxa, and evenness is the distribution of organisms belonging to different taxa within a community. So a community with 3 taxa would have richness = 3. A community dominated by organisms belonging to just one taxon would have low evenness, while a community with equal representation of all taxa would have high evenness. Different alpha diversity metrics including the Shannon and Inverse Simpson indices have been developed to calculate diversity, taking richness and evenness into account. Communities with few taxa and highly uneven distribution of organisms in different taxa have low alpha diversity. Communities with many taxa that are relatively evenly distributed in abundance have high alpha diversity.
+  
+Beta diversity reflects the degree of dissimilarity among communities, and it can reveal major differences in overall community composition based on variables of interest. To calculate beta diversity, first, a variety of different metrics (Bray-Curtis, Jaccard, UniFrac, etc.) can be used to quantify the distance or dissimilarity between all pairs of samples. Different metrics base distance/dissimilarity on the basis of different factors, including the presence of shared taxa, similar abundances of shared taxa, phylogenetic relatedness of organisms, and the overall number of taxa.
+  
+The distance or dissimilarity matrix is then ordinated. To ordinate: Objects (or descriptors) are represented in a space containing fewer dimensions than the original dataset such that the positions of the objects (or descriptors) with respect to one another may also be used to cluster them.
+  
+The closer together two points are on the ordination plot, the more similar are their bacterial communities.
+  
+Let's explore how to calculate and visualize and compare these properties of the microbiome using `phyloseq`.
+    
+  
+  
+# Setup
+
+```{r setup}
+
+# Load packages
+
+library(phyloseq)
+library(ggplot2) 
+
+sessionInfo()
+```
+  
+  
+# Importing data into `phyloseq`
+  
+## Existing `phyloseq` object
+  
+The easiest situation in which to import data into `phyloseq` is to work with a pre-existing `phyloseq` class object.
+  
+If you ran the code from last week's lesson on your own computer, you should have a `phyloseq` object saved which you can then import.
+  
+```{r loadps}
+# Load phyloseq object
+## You will need to replace this path with the one for your own file on your computer
+ps <- readRDS("C:/Users/mcrawf4/Documents/NRSG741/Microbiome/phyloseqobject.rds")
+```
+  
+Some publicly available datasets are also saved in `phyloseq` format. (Use `help()` to get more information about these data sets.)
+  
+```{r loaddata}
+# Load example data
+data(GlobalPatterns)
+data(esophagus)
+data(enterotype)
+data(soilrep)
+```
+  
+Remember that a `phyloseq` object contains a sequence table, sample data, a taxonomy table, and (optionally) a phylogenetic tree.
+  
+```{r checkpsobj}
+GlobalPatterns
+```
+  
+If we want to, we can extract each of these components individually using the indicated functions. This can be useful for troubleshooting or if you need to modify one part of the phyloseq object.
+  
+```{r pspieces}
+seqtab <- data.frame(otu_table(GlobalPatterns))
+samdf <- data.frame(sample_data(GlobalPatterns))
+tax <- data.frame(tax_table(GlobalPatterns))
+tree <- phy_tree(GlobalPatterns)
+```
+  
+We can also call particular variables in these components using the same syntax that we've learned for working with other objects and data frames.
+  
+```{r pscolnames}
+colnames(sample_data(GlobalPatterns))
+```
+  
+```{r pscallcol}
+sample_data(GlobalPatterns)$SampleType
+```
+  
+## .biom file
+  
+Another common format for processed sequence data is "biom" (http://biom-format.org). Newer versions of QIIME, for instance, produce .biom files. We can also import files of this type and convert them to `phyloseq` objects.
+  
+The phyloseq package has small examples of biom files built in to demonstrate this. First we will save the file as an object, along with the associated tree and taxonomy files, and then we will use the `import_biom` function in `phyloseq` to convert the biom to a `phyloseq` class object.
+  
+```{r loadbiom}
+# Load the biom file and associated tree and taxonomy files
+min_dense_biom <- system.file("extdata", "min_dense_otu_table.biom", package="phyloseq")
+
+tree_mindense <- system.file("extdata", "biom-tree.phy",  package="phyloseq")
+
+refseq_mindense <- system.file("extdata", "biom-refseq.fasta",  package="phyloseq")
+```
+  
+```{r importbiom}
+# Convert biom file to phyloseq object
+## There are other options for parsing taxonomy besides greengenes
+
+min_dense_ps <- import_biom(BIOMfilename=min_dense_biom, treefilename=tree_mindense, refseqfilename=refseq_mindense, parseFunction=parse_taxonomy_greengenes)
+
+class(min_dense_ps)
+```
+  
+## Original QIIME format file
+  
+QIIME originally produced output files in its own uniquely-defined format. These legacy formats can be imported using phyloseq functions.
+The different files useful for import to phyloseq are not collocated in a typical run of the QIIME pipeline. See the basics phyloseq vignette for an example of where to find the relevant files in the output directory.
+  
+```{r loadqiime}
+# Load the files from QIIME legacy output
+otufile = system.file("extdata", "GP_otu_table_rand_short.txt.gz", package="phyloseq")
+mapfile = system.file("extdata", "master_map.txt", package="phyloseq")
+treefile = system.file("extdata", "GP_tree_rand_short.newick.gz", package="phyloseq")
+rs_file = system.file("extdata", "qiime500-refseq.fasta", package="phyloseq")
+```
+  
+```{r importqiime}
+qiime_ps = import_qiime(otufilename=otufile, mapfilename=mapfile, treefilename=treefile, refseqfilename=rs_file, parseFunction=parse_taxonomy_qiime)
+```
+  
+```{r checkclassqiimeps}
+class(qiime_ps)
+```
+  
+  
+Similar tools exist in `phyloseq` for importing data from mothur and PyroTagger. See details here: https://joey711.github.io/phyloseq/import-data.html
+  
+  
+# Getting to know `phyloseq` objects
+  
+While we can access different components of a `phyloseq` object using the basic R commands we already know and love, there are some handy functions built into `phyloseq` that can make it easier.
+  
+```{r access_samples}
+# Functions for accessing sample information
+
+nsamples(GlobalPatterns)  ## number of samples
+
+sample_names(GlobalPatterns)[1:5]
+
+sample_variables(GlobalPatterns)
+
+get_variable(GlobalPatterns, "SampleType")
+
+data.frame(sample_sums(GlobalPatterns))   ## library sizes (number of reads/sequences) for each sample
+```
+    
+```{r access_tax}
+# Accessing taxonomy information
+
+rank_names(GlobalPatterns)
+
+ntaxa(GlobalPatterns)  ## Number of taxa
+
+taxa_names(GlobalPatterns)[1:10]
+```
+  
+```{r access_seqtab}
+# Accessing sequence table information
+
+## how many times each taxon was detected in the whole dataset
+taxa_sums(GlobalPatterns)[1:10]
+
+# Identify the top 10 most abundant taxa
+names(sort(taxa_sums(GlobalPatterns), decreasing = TRUE)[1:10])
+```
+  
+```{r access_tree}
+# Plot the phylogenetic tree
+plot(phy_tree(min_dense_ps), show.node.label = TRUE)
+
+# Plot a much prettier and more customizeable tree
+plot_tree(qiime_ps, color="SampleType", label.tips="Phylum", ladderize="left", justify="left", size="Abundance")
+```
+  
+  
+# Data Wrangling
+  
+## By sample
+  
+### Pruning samples
+    
+There are two main methods for subsetting phyloseq data by sample - `prune_samples` and `subset_samples`. Both of these functions contain a logical expression indicating which elements to *keep*. The "prune" subsetting method is for cases where the complete subset of desired samples is directly available.
+    
+```{r prunesamples}
+nsamples(GlobalPatterns)
+sample_names(GlobalPatterns)
+
+# Keep data for all samples except "SV1"
+GP1 <- prune_samples(sample_names(GlobalPatterns) != "SV1", GlobalPatterns)
+nsamples(GP1)
+
+# Keep only samples with more than 100,000 reads
+GP2 <- prune_samples(sample_sums(GlobalPatterns) > 100000, GlobalPatterns)
+nsamples(GP2)
+```
+  
+### Subsetting samples
+  
+Alternatively, the "subset" method is for subsetting based on auxiliary data contained in the sample data. 
+  
+```{r subsetsamples}
+get_variable(GlobalPatterns, "SampleType")
+
+# Keep all samples except those with SampleType "Mock"
+GP3 <- subset_samples(GlobalPatterns, SampleType != "Mock")
+nsamples(GP3)
+
+# Subset based on a created variable
+## Create variable indicating if sample is human-derived or not. 
+sample_data(GlobalPatterns)$human <- get_variable(GlobalPatterns, "SampleType") %in% c("Feces", "Mock", "Skin", "Tongue")
+sample_data(GlobalPatterns)$human <- factor(sample_data(GlobalPatterns)$human, levels=c(TRUE, FALSE), labels=c("Human", "Environmental"))
+
+## Keep only human-derived samples
+GP4 <- subset_samples(GlobalPatterns, human=="Human")
+nsamples(GP4)
+```
+  
+### Merging Samples
+
+Merging samples with `merge_samples()` can be a useful means of reducing noise or excess features, say by removing the individual effects between replicates or between samples for a particular explanatory variable. The abundance values for the merged samples are summed.
+
+```{r mergesamples}
+# Merge by SampleType variable
+GPmerged <- merge_samples(GlobalPatterns, "SampleType")
+
+# Look at "SampleType" variable after merging
+get_variable(GPmerged, "SampleType")
+```
+  
+Be aware that the `merge_samples` function will change your sample data. Categorical variables get converted to integers and then summed. Your sample names will also change based on the merging variable.
+  
+```{r sdmergesamples}
+# See what the merge_samples function did to the sample data
+
+head(sample_data(GPmerged))
+head(sample_data(GlobalPatterns))
+```
+  
+You can go back and correct some sample data after merging. This is a bit cumbersome, though, so depending on your data and the way you want to combine it, it may be better to do your sample merging before creating your phyloseq object or to do it separately for each component of the phyloseq object.
+  
+```{r fixmergesamples}
+# Repair the "SampleType" variable in the merged data by replacing it with the new sample names
+sample_data(GPmerged)$SampleType <- factor(sample_names(GPmerged))
+
+get_variable(GPmerged, "SampleType")
+```
+    
+  
+## By taxa
+  
+### Pruning taxa
+  
+Just like the analagous pruning based on samples, the `prune_taxa` function takes a logical expression indicating which taxa to *keep*, and this method is for cases where the complete subset of desired taxa is directly available.
+  
+```{r prunetaxa}
+# Remove unobserved OTUs (those that sum 0 across all samples)
+GP <- prune_taxa(taxa_sums(GlobalPatterns) > 0, GlobalPatterns)
+
+# Keep data from the 10 most abundant taxa
+myTaxa <- names(sort(taxa_sums(GP), decreasing = TRUE)[1:10])
+GPtop10 <- prune_taxa(myTaxa, GP)
+
+# Look at phylogenetic tree for all data
+plot_tree(GlobalPatterns, color = "SampleType", label.tips = "Phylum", ladderize = "left", justify = "left" , size = "Abundance")
+
+# Look at phylogenetic tree for pruned data
+plot_tree(GPtop10, color = "SampleType", label.tips = "Phylum", ladderize = "left", justify = "left" , size = "Abundance")
+
+```
+  
+### Subsetting Taxa
+  
+Alternatively, the "subset" method is for subsetting based on data contained in the taxonomy table. 
+  
+```{r prunephy, fig.width=12}
+GP.ch = subset_taxa(GlobalPatterns, Phylum=="Chlamydiae")
+  
+# Look at phylogenetic tree for pruned data
+plot_tree(GP.ch, color = "SampleType", label.tips = "Family", ladderize="left", size = "Abundance")
+```
+  
+### Merging Taxa
+  
+`phyloseq` does have the option to merge taxa using the same kind of approach we took with merging samples. The `archetype` argument in the function specifies the index of the taxon ID that should be kept to represent the merged group of taxa (i.e. we're merging the first 20 taxa into a single group and calling the new group by the name of the 2nd taxon in that original list of 20). The default is to use the taxon with the largest count total if counts are available, or otherwise to use the first taxon in the sequence of taxa to merge. If `archetype` is not a valid index or index-name in the sequence of merged taxa, the first will be used, and the value in `archetype` will be used as the index-name for the new species.
+  
+```{r mergetaxa}
+ntaxa(GP.ch)
+
+# Merge the first 20 taxa in the data set pruned for the Chlamydiae phylum
+GP.chmerge <- merge_taxa(GP.ch, taxa_names(GP.ch)[1:20], archetype=2)
+ntaxa(GP.chmerge)
+```
+  
+This is a very arbitrary way to reduce the complexity of the data, pooling sequence information by index rather than any common property. A better way to merge taxa is to use the 'glom' functions to agglomerate taxa based their shared properties.
+  
+For `tip_glom`, all tips of the phylogenetic tree separated by a cophenetic distance smaller than `h` will be agglomerated into one taxon. This functionally merges the most closely related taxa.
+  
+`tax_glom` agglomerates all taxa at a certain taxonomic rank, i.e. combining all taxa with the same genus into one group. Columns/ranks to the right of the rank chosen to use for agglomeration will be replaced with NA because they should be meaningless following agglomeration.
+  
+```{r glom, fig.width=10, fig.height=4}
+GP.chglom <- tax_glom(GP.ch, taxrank="Family")
+
+# Look at phylogenetic tree for glommed data
+plot_tree(GP.chglom, color = "SampleType", label.tips = "Family", ladderize="left", size = "Abundance")
+```
+  
+### Filtering taxa  
+  
+Finally, we can filter taxa as well. The function `filter_taxa` allows for taxa-wise filtering based on the parameters you provide. (The functions `filterfun_sample` and `genefilter_sample` will allow you to build arbitrarily complex sample-wise filtering criteria.)  
+  
+For instance, we can remove taxa not seen more than 3 times in at least 20% of the samples. This gets rid of taxa with a small mean & trivially large C.V. that won't provide us much useful information.
+  
+```{r filt1}
+ntaxa(GlobalPatterns)
+
+# Remove taxa not seen more than 3 times in at least 20% of the samples
+GPf = filter_taxa(GlobalPatterns, function(x) sum(x > 3) > (0.2*length(x)), TRUE)
+ntaxa(GPf)
+```
+  
+In another example, we will first transform the GlobalPatterns dataset from raw counts to relative abundance, then filter that object to remove all taxa that have a mean abundance < $10^-5$. 
+```{r filt2}
+# Create the object with the relative abundance data
+GPr  = transform_sample_counts(GlobalPatterns, function(x) x / sum(x) )
+GPfr = filter_taxa(GPr, function(x) mean(x) > 1e-5, TRUE)
+ntaxa(GPfr)
+```
+  
+Now you've got the tool set to clean up and manipulate your `phyloseq` data. Let's FINALLY get to the real analysis steps, the payoff for all this processing where we finally get to see what the data have to tell us about the microbiome.
+  
+  
+  
+# Most Abundant Taxa
+  
+First, let's visualize our data (using the GlobalPatterns dataset) and see what bacteria are most abundant in each sample. Let's create a bar plot at the family level for the most abundant taxa.
+  
+```{r taxafam}
+# identify the top 15 most abundant taxa 
+top15 <- names(sort(taxa_sums(GlobalPatterns), decreasing=TRUE))[1:15]
+
+# Prune the dataset to keep only those 15 taxa
+ps.top15 <- prune_taxa(top15, GlobalPatterns)
+
+# Create a simple bar plot colored by family
+plot_bar(ps.top15, fill="Family")
+```
+  
+Note that you can modify your plot with arguments from `ggplot2`.
+
+```{r taxafamtitle}
+plot_bar(ps.top15, fill="Family") +
+  labs(title="Most Abundant Families") +
+  theme(plot.title = element_text(hjust=0.5))
+```
+  
+The divisions in each bar represent different taxa, and we see that the top 15 taxa only come from a few families. If we wanted to instead plot the top 15 families, we could agglomerate taxa at the family level before plotting.
+  
+```{r taxafamglom}
+# glom to family level
+GPglomfam <- tax_glom(GlobalPatterns, taxrank="Family")
+
+# identify the top 15 most abundant taxa 
+top15g <- names(sort(taxa_sums(GPglomfam), decreasing=TRUE))[1:15]
+
+# Prune the dataset to keep only those 15 taxa
+ps.top15g <- prune_taxa(top15g, GPglomfam)
+
+plot_bar(ps.top15g, fill="Family") +
+  labs(title="Most Abundant Families") +
+  theme(plot.title = element_text(hjust=0.5))
+```
+  
+We can see that the raw counts of bacteria in some samples are much higher than in others. If we want to look at the proportions of each sample made up by particular bacteria, we can convert the raw data to relative abundance data.
+  
+```{r relab}
+# Create the object with the relative abundance data
+GPgr  = transform_sample_counts(GPglomfam, function(x) x / sum(x) )
+
+# identify the top 15 most abundant taxa 
+top15gr <- names(sort(taxa_sums(GPgr), decreasing=TRUE))[1:15]
+
+# Prune the dataset to keep only those 15 taxa
+ps.top15gr <- prune_taxa(top15gr, GPgr)
+
+# Create a bar plot of relative abundance data colored by family
+plot_bar(ps.top15gr, fill="Family") +
+  labs(title="Most Abundant Families") +
+  theme(plot.title = element_text(hjust=0.5))
+```
+  
+This plot still doesn't show us anything about the sample type. Let's add that information to our graphic.
+  
+```{r taxafamilyfacet, fig.height=7, fig.width=9}
+plot_bar(ps.top15gr, fill="Family", facet_grid = "human") +
+  labs(title="Most Abundant Families") +
+  theme(plot.title = element_text(hjust=0.5))
+```
+  
+There are lots of options for customizing plots created with phyloseq functions, but if you just can't get something the way you want it, you can also define your own graphics using `psmelt`.
+  
+```{r psmelt}
+mdf <- psmelt(GlobalPatterns)
+# Simple bar plot
+
+ggplot(mdf, aes(x=SampleType, y=Abundance)) +
+  geom_bar(stat="identity", position = "stack", color="black")
+```
+  
+  
+  
+# Alpha Diversity
+
+## Setup
+
+It is good to prune taxa that are not present in any of the samples, but don't filter out more than that at this point. Many richness estimates are modeled on singletons and doubletons, and you need to leave them in the dataset to get meaningful estimates.
+  
+```{r adprune}
+# Prune any ecies = 0 across all samples
+GP <- prune_taxa(taxa_sums(GlobalPatterns) > 0, GlobalPatterns)
+```
+  
+We also want to remove the "Mock" community samples so we can focus on our experimental samples rather than quality controls.
+  
+```{r rmmock}
+# Keep all samples except those with SampleType "Mock"
+GP <- subset_samples(GP, SampleType != "Mock")
+```
+
+  
+## Plotting alpha diversity
+  
+The `plot_richness` function in `phyloseq` is used to plot alpha diversity (not just richness).
+```{r defaultad, fig.width=20}
+# Default plot
+plot_richness(GP)
+```
+  
+We can, of course, just select a couple of measures to plot.
+  
+```{r adselect}
+# Plot only Shannon, Inverse Simpson indices
+## The Shannon index is influenced more by rare taxa while the inverse Simpson index typically reflects the contributions of dominant taxa.
+
+plot_richness(GP, measures = c("Shannon", "InvSimpson"))
+```
+
+We can also specify a sample variable on which to organize the samples along the x-axis.
+
+```{r adhuman}
+# Plot select alpha diversity measures by human variable
+
+plot_richness(GP, x="human", measures = c("Shannon", "InvSimpson"))
+
+```
+
+We can customize our alpha diversity plots using tools from ggplot2. 
+  
+```{r adpretty}
+plot_richness(GP, x="human", color="SampleType", measures = c("Shannon", "InvSimpson")) +
+  geom_point(size=5, alpha=0.7) +
+  xlab("Sample Source")
+```
+  
+If you want to get the actual alpha diversity values in order to run statistical comparisons, etc., use the `estimate_richness` function in `phyloseq`.
+  
+```{r adval}
+ad <- estimate_richness(GP, measures = c("Shannon", "InvSimpson"))
+head(ad)
+```
+  
+  
+  
+# Beta diversity
+  
+Recall that the first step in determining beta diversity is to calculate distance/dissimilarity between all samples. `phyloseq` supports many different methods for calculating this:
+  
+```{r}
+distanceMethodList
+```
+  
+I'll show you examples with one of the most common methods today.
+  
+The Bray-Curtis method generates a dissimilarity matrix taking both presence/absence of species as well as their abundance into account.
+  
+Non-metric multidimensional scaling is a flexible, rank-based approach which produces an ordination based on a distance or dissimilarity matrix.
+  
+```{r bray}
+# Set seed so that analysis is reproducible
+set.seed(20220221)
+
+# Ordinate with Bray-Curtis method using non-metric multidimensional scaling
+ord.nmds.bray <- ordinate(GP, method="NMDS", distance="bray")
+ord.nmds.bray
+```
+  
+20 iterations should be sufficient to reach a convergent solution, and the stress should be below 0.2 (at or above would be considered suspect). If so, two dimensions should be sufficient to represent the data.
+  
+Then we can plot our ordination.
+  
+````{r brayhuman}
+ # Plot ordination
+plot_ordination(GP, ord.nmds.bray, color="human", title="Bray-Curtis")
+```
+  
+It appears that we have pretty good separation of our human- and environment-derived samples. This indicates that there are likely broad compositional differences in the two kinds of samples.
+  
+We can customize and add more details to this plot.
+  
+```{r brayhuman2}
+plot_ordination(GP, ord.nmds.bray, color="SampleType", shape="human", title="Bray-Curtis") + 
+  geom_point(size=4) +
+  guides(shape=guide_legend(title="Sample Source"), color=guide_legend(title="Sample Type")) +
+  theme_bw()
+```
+
+`phyloseq` incorporates tools from the `vegan` package which is designed for ecological community analysis. We can use it to apply PERMANOVA to our dissimilarity data.
+  
+```{r braytest}
+# Test for significant differences using PERMANOVA
+BC.dist <- vegan::vegdist(t(otu_table(GP)), method="bray")
+vegan::adonis2(BC.dist ~ human, data=data.frame(sample_data(GP)), nperm=1000, method="bray", by="margin")
+```
+  
+  
+  
+## Heatmap Plots
+
+You can also create heatmaps using ordination methods to organize rows and columns.
+
+Traditionally heatmaps have been used to emphasize data that is above or below a threshold as "hot" or "cold" respectively. But when used with microbiome abundance data, the need is to see the relative patterns of high abundance taxa against a background of low abundance or absent groups. Thus the default color scheme is dark blue (low abundance) to very light blue for highest abundance, with black representing missing or zero abundance values. You can change the color scheme by changing the `low`, `high`, and `na.value` arguments. 
+
+Let's plot the top 100 most abundant bacterial taxa across all samples in the GlobalPatterns dataset.
+
+```{r heatmap, fig.height=8, fig.width=8}
+# Get top 100 most abundant taxa in GlobalPatterns
+gpt <- subset_taxa(GP, Kingdom=="Bacteria")
+gpt <- prune_taxa(names(sort(taxa_sums(gpt),TRUE)[1:100]), gpt)
+
+# Plot the heatmap
+plot_heatmap(gpt, sample.label="SampleType")
+```
+
+Let's specify our distance and ordination methods and focus in on the taxa at the family level.
+
+```{r heatmap2, fig.height=8, fig.width=8}
+gpt <- tax_glom(gpt, taxrank="Family")
+
+# Re-label taxa by family
+plot_heatmap(gpt, method="NMDS", distance="bray", sample.label="SampleType", taxa.label="Family")
+
+```
+  
+Like in our ordination plot, we can see that the composition of the most dominant taxa is most similar in samples of the same type.
+  
+How about a different color scheme?
+  
+```{r heatmap3, fig.height=8, fig.width=8}
+
+plot_heatmap(gpt, method="NMDS", distance="bray", sample.label="SampleType", taxa.label="Family", low="#000033", high="#CCFF66")
+
+```
+  
+  
+  
+## Network plots
+  
+The following code illustrates using the `make_network` and `plot_network` functions in phyloseq. In this context, we are using networks to graphically represent thresholded distances between samples or OTUs. The euclidean distances between points on the plot are essentially arbitrary, only the “edges” (lines) between “nodes” (taxa/samples) are derived directly from the data.
+  
+We are going to create a network of samples in this dataset, connecting two samples when a distance between them is below some threshold. The threshold was determined empirically to show something interesting for demonstration. In practice, this value has a huge effect on the resulting network, and its usefulness, and it is highly recommended that you investigate the results from multiple values.
+
+```{r networksam}
+# Set the seed
+set.seed(20220221)
+
+ig = make_network(GP, type="samples", distance="bray", max.dist=0.85)
+plot_network(ig, GP, color="SampleType", shape="human", line_weight=0.4, label = NULL)
+```
+  
+We can also create a network representing communities of bacteria that occurr in similar profiles of samples. We'll use the dataset pruned to the top 20 most abundant taxa.
+  
+```{r networktax}
+GP20 <- prune_taxa(names(sort(taxa_sums(GP),TRUE)[1:20]), GP)
+
+ig = make_network(GP20, type="taxa", distance="bray", max.dist=0.85)
+plot_network(ig, GP20, "taxa", color="Family", line_weight=0.4, label = NULL)
+```
